@@ -1,5 +1,5 @@
 import { closestDistinct, choosePass, expandHand, seatTo, type HandDistance, type Tile } from "@mahjong-coach/engine";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CARD,
   ME,
@@ -29,6 +29,16 @@ export function App() {
   const [game, setGame] = useState<Game>(() => newGame(initialSeed()));
   const [coaching, setCoaching] = useState(false);
   const [seenNudge, setSeenNudge] = useState(0);
+  const [order, setOrder] = useState<number[]>([]);
+  const hand = game.hands[ME];
+  const arranged = useMemo(() => arrange(order, hand), [order, hand]);
+  // Remember where new tiles landed, so your arrangement carries into the next pass.
+  useEffect(() => setOrder(arranged.map((t) => t.id)), [hand]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rack: Arrangement = {
+    tiles: arranged,
+    onReorder: setOrder,
+    onSort: () => setOrder(sortTiles(hand).map((t) => t.id)),
+  };
 
   const step = currentStep(game);
   const last = game.log.at(-1);
@@ -37,6 +47,7 @@ export function App() {
   const restart = (seed: number) => {
     setGame(newGame(seed));
     setSeenNudge(0);
+    setOrder([]);
   };
 
   return (
@@ -68,36 +79,87 @@ export function App() {
         </aside>
       )}
 
-      {step.kind === "pass" && <PassScreen key={game.step} game={game} onPass={(ids, blind) => setGame(submitPass(game, ids, blind))} />}
-      {step.kind === "vote" && <VoteScreen game={game} onVote={(yes) => setGame(vote(game, yes))} />}
-      {step.kind === "courtesy" && <CourtesyScreen key={game.step} game={game} onPass={(ids) => setGame(submitCourtesy(game, ids))} />}
-      {step.kind === "done" && <ReviewScreen game={game} onReplay={() => restart(game.seed)} onNew={() => restart(Math.floor(Math.random() * 99999) + 1)} />}
+      {step.kind === "pass" && <PassScreen key={game.step} game={game} rack={rack} onPass={(ids, blind) => setGame(submitPass(game, ids, blind))} />}
+      {step.kind === "vote" && <VoteScreen game={game} rack={rack} onVote={(yes) => setGame(vote(game, yes))} />}
+      {step.kind === "courtesy" && <CourtesyScreen key={game.step} game={game} rack={rack} onPass={(ids) => setGame(submitCourtesy(game, ids))} />}
+      {step.kind === "done" && <ReviewScreen game={game} rack={rack} onReplay={() => restart(game.seed)} onNew={() => restart(Math.floor(Math.random() * 99999) + 1)} />}
     </div>
   );
 }
 
+interface Arrangement {
+  /** Your tiles in the order you've arranged them. */
+  tiles: readonly Tile[];
+  onReorder: (ids: number[]) => void;
+  onSort: () => void;
+}
+
+/** Keeps your arrangement; tiles that just arrived go at the right end, like picking them up. */
+function arrange(order: readonly number[], hand: readonly Tile[]): Tile[] {
+  const byId = new Map(hand.map((t) => [t.id, t]));
+  const kept = order.filter((id) => byId.has(id)).map((id) => byId.get(id)!);
+  const keptIds = new Set(kept.map((t) => t.id));
+  return [...kept, ...sortTiles(hand.filter((t) => !keptIds.has(t.id)))];
+}
+
 function Rack({
-  tiles,
+  arrangement,
   selected,
   hinted,
   fresh,
   onToggle,
   canSelectMore,
 }: {
-  tiles: readonly Tile[];
+  arrangement: Arrangement;
   selected: ReadonlySet<number>;
   hinted: ReadonlySet<number>;
   fresh: ReadonlySet<number>;
   onToggle?: (id: number) => void;
   canSelectMore: boolean;
 }) {
+  const { tiles, onReorder, onSort } = arrangement;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ id: number; startX: number; moved: boolean } | null>(null);
+  const justDragged = useRef(false);
+  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const ids = tiles.map((t) => t.id);
+
+  const moveTo = (id: number, to: number) => {
+    const rest = ids.filter((i) => i !== id);
+    rest.splice(Math.max(0, Math.min(to, rest.length)), 0, id);
+    onReorder(rest);
+  };
+  // Which slot the pointer is over: the tile whose center is nearest.
+  const slotAt = (x: number) => {
+    const kids = Array.from(rowRef.current?.children ?? []) as HTMLElement[];
+    let best = 0;
+    let bestDist = Infinity;
+    kids.forEach((k, i) => {
+      const r = k.getBoundingClientRect();
+      const d = Math.abs(r.left + r.width / 2 - x);
+      if (d < bestDist) {
+        bestDist = d;
+        best = i;
+      }
+    });
+    return best;
+  };
+  const focusTile = (id: number) =>
+    requestAnimationFrame(() => rowRef.current?.querySelector<HTMLButtonElement>(`[data-id="${id}"]`)?.focus());
+
   return (
     <section className="rack" aria-label="Your rack">
-      <p className="rack-label">Your rack</p>
-      <div className="rack-tiles">
-        {sortTiles(tiles).map((t) => {
+      <div className="rack-head">
+        <p className="rack-label">Your rack</p>
+        <button type="button" className="rack-sort" onClick={onSort}>
+          Sort
+        </button>
+      </div>
+      <div className="rack-tiles" ref={rowRef}>
+        {tiles.map((t) => {
           const isSel = selected.has(t.id);
           const joker = t.kind.type === "joker";
+          const blocked = !onToggle || joker || (!isSel && !canSelectMore);
           return (
             <TileView
               key={t.id}
@@ -105,13 +167,71 @@ function Rack({
               selected={isSel}
               fresh={fresh.has(t.id)}
               hinted={hinted.has(t.id)}
-              disabled={!onToggle || joker || (!isSel && !canSelectMore)}
-              {...(onToggle ? { onClick: () => onToggle(t.id) } : {})}
+              dragging={draggingId === t.id}
+              blocked={blocked}
+              onClick={() => {
+                if (justDragged.current) {
+                  justDragged.current = false;
+                  return;
+                }
+                if (!blocked && onToggle) onToggle(t.id);
+              }}
+              buttonProps={{
+                "data-id": t.id,
+                onPointerDown: (e) => {
+                  drag.current = { id: t.id, startX: e.clientX, moved: false };
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                },
+                onPointerMove: (e) => {
+                  const d = drag.current;
+                  if (!d) return;
+                  if (!d.moved) {
+                    if (Math.abs(e.clientX - d.startX) < 8) return;
+                    d.moved = true;
+                    setDraggingId(d.id);
+                  }
+                  const to = slotAt(e.clientX);
+                  if (ids.indexOf(d.id) !== to) moveTo(d.id, to);
+                },
+                onPointerUp: () => {
+                  // Swallow the click that may follow a drag, but only that one: browsers don't
+                  // always send it after the tile has moved, so clear the flag right after.
+                  if (drag.current?.moved) {
+                    justDragged.current = true;
+                    setTimeout(() => (justDragged.current = false), 0);
+                  }
+                  drag.current = null;
+                  setDraggingId(null);
+                },
+                onPointerCancel: () => {
+                  drag.current = null;
+                  setDraggingId(null);
+                },
+                onKeyDown: (e) => {
+                  if (!e.shiftKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+                  e.preventDefault();
+                  moveTo(t.id, ids.indexOf(t.id) + (e.key === "ArrowLeft" ? -1 : 1));
+                  focusTile(t.id);
+                },
+              }}
             />
           );
         })}
       </div>
     </section>
+  );
+}
+
+function RackNote({ hasFresh }: { hasFresh: boolean }) {
+  return (
+    <p className="rack-note">
+      {hasFresh && (
+        <>
+          <span className="new-dot inline" aria-hidden="true" /> New tiles are marked with a pink dot, at the right end.{" "}
+        </>
+      )}
+      Drag a tile to move it. Tap to pick it.
+    </p>
   );
 }
 
@@ -147,7 +267,7 @@ function useHintAndHands({ hand, need }: { hand: readonly Tile[]; need: number }
   };
 }
 
-function PassScreen({ game, onPass }: { game: Game; onPass: (ids: number[], blind: number) => void }) {
+function PassScreen({ game, rack, onPass }: { game: Game; rack: Arrangement; onPass: (ids: number[], blind: number) => void }) {
   const step = currentStep(game);
   const [blind, setBlind] = useState(0);
   const need = 3 - blind;
@@ -193,8 +313,8 @@ function PassScreen({ game, onPass }: { game: Game; onPass: (ids: number[], blin
         )}
       </div>
 
-      <Rack tiles={hand} selected={selected} hinted={hinted} fresh={game.fresh} onToggle={toggle} canSelectMore={selected.size < need} />
-      {game.fresh.size > 0 && <p className="fresh-note">Tiles with a gold edge just arrived.</p>}
+      <Rack arrangement={rack} selected={selected} hinted={hinted} fresh={game.fresh} onToggle={toggle} canSelectMore={selected.size < need} />
+      <RackNote hasFresh={game.fresh.size > 0} />
 
       {controls}
       {panel}
@@ -208,7 +328,7 @@ function PassScreen({ game, onPass }: { game: Game; onPass: (ids: number[], blin
   );
 }
 
-function VoteScreen({ game, onVote }: { game: Game; onVote: (yes: boolean) => void }) {
+function VoteScreen({ game, rack, onVote }: { game: Game; rack: Arrangement; onVote: (yes: boolean) => void }) {
   return (
     <main className="screen">
       <div className="step-card">
@@ -216,7 +336,8 @@ function VoteScreen({ game, onVote }: { game: Game; onVote: (yes: boolean) => vo
         <h2>Play the second Charleston?</h2>
         <p>Any player can stop it. The other players want to keep going, so it's your call.</p>
       </div>
-      <Rack tiles={game.hands[ME]} selected={new Set()} hinted={new Set()} fresh={game.fresh} canSelectMore={false} />
+      <Rack arrangement={rack} selected={new Set()} hinted={new Set()} fresh={game.fresh} canSelectMore={false} />
+      <RackNote hasFresh={game.fresh.size > 0} />
       <div className="actions two">
         <button type="button" className="ghost" onClick={() => onVote(false)}>
           Stop here
@@ -229,7 +350,7 @@ function VoteScreen({ game, onVote }: { game: Game; onVote: (yes: boolean) => vo
   );
 }
 
-function CourtesyScreen({ game, onPass }: { game: Game; onPass: (ids: number[]) => void }) {
+function CourtesyScreen({ game, rack, onPass }: { game: Game; rack: Arrangement; onPass: (ids: number[]) => void }) {
   const { selected, toggle } = useSelection(3);
   const hand = game.hands[ME];
   const { hinted, controls, panel } = useHintAndHands({ hand, need: Math.min(3, WEST_OFFER) });
@@ -244,7 +365,8 @@ function CourtesyScreen({ game, onPass }: { game: Game; onPass: (ids: number[]) 
           Offer 0 to 3 tiles. West offers {WEST_OFFER}, so you'll each pass the smaller number. Pick in the order you'd give them up.
         </p>
       </div>
-      <Rack tiles={hand} selected={selected} hinted={hinted} fresh={game.fresh} onToggle={toggle} canSelectMore={selected.size < 3} />
+      <Rack arrangement={rack} selected={selected} hinted={hinted} fresh={game.fresh} onToggle={toggle} canSelectMore={selected.size < 3} />
+      <RackNote hasFresh={game.fresh.size > 0} />
       {controls}
       {panel}
       <div className="actions">
@@ -367,7 +489,7 @@ function ReviewEntry({ entry }: { entry: LogEntry }) {
   );
 }
 
-function ReviewScreen({ game, onReplay, onNew }: { game: Game; onReplay: () => void; onNew: () => void }) {
+function ReviewScreen({ game, rack, onReplay, onNew }: { game: Game; rack: Arrangement; onReplay: () => void; onNew: () => void }) {
   const counts = game.log.reduce<Record<string, number>>((acc, e) => {
     if (e.review) acc[e.review.rating] = (acc[e.review.rating] ?? 0) + 1;
     return acc;
@@ -388,7 +510,7 @@ function ReviewScreen({ game, onReplay, onNew }: { game: Game; onReplay: () => v
           <ReviewEntry key={i} entry={e} />
         ))}
       </ol>
-      <Rack tiles={game.hands[ME]} selected={new Set()} hinted={new Set()} fresh={new Set()} canSelectMore={false} />
+      <Rack arrangement={rack} selected={new Set()} hinted={new Set()} fresh={game.fresh} canSelectMore={false} />
       <ClosestHands hand={game.hands[ME]} />
       <div className="actions two">
         <button type="button" className="ghost" onClick={onReplay}>

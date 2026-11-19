@@ -52,9 +52,10 @@ button {
 }
 
 .app {
-  max-width: 560px;
+  max-width: 880px;
   margin: 0 auto;
-  padding: max(16px, env(safe-area-inset-top)) 16px max(28px, env(safe-area-inset-bottom));
+  padding: max(16px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(28px, env(safe-area-inset-bottom))
+    max(12px, env(safe-area-inset-left));
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -222,36 +223,58 @@ button {
   outline-offset: 2px;
 }
 
-/* The rack */
+/* The rack: one row, like a real rack */
 .rack {
   background: var(--green);
   border: 1.5px solid var(--ink);
   outline: 1px solid var(--paper);
   outline-offset: -6px;
-  padding: 12px 12px 18px;
+  padding: 10px 8px 14px;
   box-shadow: 0 10px 20px rgba(30, 20, 10, 0.3);
+}
+.rack-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 4px 4px;
 }
 .rack-label {
   font-family: var(--serif-display);
   font-style: italic;
   color: var(--paper);
   font-size: 18px;
-  margin: 0 0 8px 4px;
+}
+.rack-sort {
+  min-height: 36px;
+  padding: 4px 14px;
+  background: transparent;
+  color: var(--paper);
+  border: 1px solid var(--paper);
+  font-family: var(--serif-sc);
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.rack-sort:focus-visible {
+  outline: 2px solid var(--ochre);
+  outline-offset: 2px;
 }
 .rack-tiles {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 8px 6px;
+  display: flex;
+  gap: 2px;
+  /* room above for lifted tiles and the new-tile dot */
+  padding-top: 18px;
 }
 
 /* Tiles */
 .tile {
   display: inline-block;
+  position: relative;
   padding: 0;
   border: 1px solid var(--ink);
-  border-radius: 7px;
+  border-radius: 6px;
   background: var(--card);
-  box-shadow: 0 4px 0 var(--green-2), 0 5px 0 var(--ink), 0 8px 10px rgba(20, 12, 5, 0.3);
+  box-shadow: 0 3px 0 var(--green-2), 0 4px 0 var(--ink), 0 6px 8px rgba(20, 12, 5, 0.3);
   transition: transform 0.15s ease, box-shadow 0.15s ease;
   line-height: 0;
 }
@@ -261,24 +284,72 @@ button {
   display: block;
 }
 .tile-rack {
-  width: 100%;
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 64px;
   aspect-ratio: 3 / 4;
-  cursor: pointer;
+  cursor: grab;
+  touch-action: pan-y; /* vertical swipes still scroll the page; sideways drags move tiles */
+  user-select: none;
+  -webkit-user-select: none;
 }
-.tile-rack:disabled {
-  cursor: default;
+.tile-rack.is-blocked {
+  cursor: grab;
 }
 .tile-rack.is-selected {
-  transform: translateY(-10px);
+  transform: translateY(-12px);
   background: #fff3d6;
-  box-shadow: 0 4px 0 var(--ochre), 0 5px 0 var(--ink), 0 14px 16px rgba(20, 12, 5, 0.35);
+  box-shadow: 0 3px 0 var(--ochre), 0 4px 0 var(--ink), 0 12px 14px rgba(20, 12, 5, 0.35);
 }
+.tile-rack.is-dragging {
+  cursor: grabbing;
+  transform: translateY(-6px) scale(1.12);
+  z-index: 2;
+  box-shadow: 0 3px 0 var(--green-2), 0 4px 0 var(--ink), 0 14px 18px rgba(20, 12, 5, 0.45);
+  transition: none;
+}
+.tile-rack.is-selected.is-dragging {
+  transform: translateY(-14px) scale(1.12);
+}
+
+/* New tiles: pink tint, pink border and a pink dot above */
 .tile.is-fresh {
-  border-color: var(--ochre);
-  box-shadow: 0 0 0 2px var(--ochre), 0 4px 0 var(--green-2), 0 5px 0 var(--ink);
+  background: #f9dfe2;
+  border: 2px solid var(--rose-dark);
+  animation: arrive 0.45s ease-out;
 }
+.new-dot {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--rose-dark);
+  box-shadow: 0 0 0 2px var(--paper);
+}
+.new-dot.inline {
+  position: static;
+  display: inline-block;
+  margin: 0 4px 0 0;
+  vertical-align: middle;
+  box-shadow: none;
+}
+@keyframes arrive {
+  from {
+    transform: translateY(-18px);
+    opacity: 0.2;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* Hints: a dashed blue outline, so it never looks like a new tile */
 .tile.is-hinted {
-  outline: 2.5px dashed var(--rose);
+  outline: 2.5px dashed var(--delft);
   outline-offset: 2px;
 }
 .tile:focus-visible {
@@ -294,9 +365,12 @@ button {
   .tile {
     transition: none;
   }
+  .tile.is-fresh {
+    animation: none;
+  }
 }
 
-.fresh-note {
+.rack-note {
   font-size: 14px;
   color: var(--ink-soft);
   font-style: italic;
@@ -451,4 +525,41 @@ button {
   grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
   gap: 12px;
   font-size: 15px;
+}
+
+/* Phones held sideways: tighten everything above the rack so it stays on screen */
+@media (max-height: 500px) {
+  .app {
+    gap: 8px;
+    padding-top: max(8px, env(safe-area-inset-top));
+  }
+  .topbar .eyebrow,
+  .deal-line {
+    display: none;
+  }
+  .topbar h1 {
+    font-size: 24px;
+  }
+  .step-card {
+    padding: 8px 14px;
+    gap: 2px;
+  }
+  .step-card h2 {
+    font-size: 22px;
+  }
+  .step-card h2 .muted {
+    font-size: 17px;
+  }
+  .rack {
+    padding: 6px 8px 10px;
+  }
+  .rack-head {
+    margin-bottom: 0;
+  }
+  .rack-tiles {
+    padding-top: 14px;
+  }
+  .tile-rack {
+    max-width: 50px;
+  }
 }

@@ -2,6 +2,7 @@
 // every face is drawn by one function so it can be swapped for an image later.
 
 import type { TileKind } from "@mahjong-coach/engine";
+import type { ButtonHTMLAttributes } from "react";
 
 const INK = "#2B211C";
 const ROSE = "#C1505B";
@@ -145,11 +146,14 @@ interface TileProps {
   selected?: boolean;
   fresh?: boolean;
   hinted?: boolean;
-  disabled?: boolean;
+  dragging?: boolean;
+  /** Shown as unavailable but still focusable and draggable (jokers, or when 3 are already picked). */
+  blocked?: boolean;
   onClick?: () => void;
+  buttonProps?: ButtonHTMLAttributes<HTMLButtonElement> & { "data-id"?: number };
 }
 
-export function TileView({ kind, size = "rack", selected, fresh, hinted, disabled, onClick }: TileProps) {
+export function TileView({ kind, size = "rack", selected, fresh, hinted, dragging, blocked, onClick, buttonProps }: TileProps) {
   const svg = (
     <svg viewBox="0 0 60 80" aria-hidden="true" className="tile-svg">
       <rect x="4.5" y="4.5" width="51" height="71" rx="4" fill="none" stroke={INK} strokeWidth="0.8" />
@@ -157,18 +161,36 @@ export function TileView({ kind, size = "rack", selected, fresh, hinted, disable
       <Face kind={kind} />
     </svg>
   );
-  const cls = ["tile", `tile-${size}`, selected && "is-selected", fresh && "is-fresh", hinted && "is-hinted"]
+  const cls = [
+    "tile",
+    `tile-${size}`,
+    selected && "is-selected",
+    fresh && "is-fresh",
+    hinted && "is-hinted",
+    dragging && "is-dragging",
+    blocked && "is-blocked",
+  ]
     .filter(Boolean)
     .join(" ");
+  const label = `${tileName(kind)}${fresh ? ", new" : ""}${selected ? ", selected" : ""}`;
   if (!onClick) {
     return (
-      <span className={cls} role="img" aria-label={tileName(kind)}>
+      <span className={cls} role="img" aria-label={label}>
         {svg}
       </span>
     );
   }
   return (
-    <button type="button" className={cls} aria-label={tileName(kind)} aria-pressed={selected} disabled={disabled} onClick={onClick}>
+    <button
+      type="button"
+      className={cls}
+      aria-label={label}
+      aria-pressed={selected}
+      aria-disabled={blocked || undefined}
+      onClick={onClick}
+      {...buttonProps}
+    >
+      {fresh && <span className="new-dot" aria-hidden="true" />}
       {svg}
     </button>
   );
