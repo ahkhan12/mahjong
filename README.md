@@ -6,14 +6,17 @@ An American mahjong app for getting better: you play every decision yourself, th
 
 - `packages/engine`: the rules engine in plain TypeScript, with no UI code. Tiles, the deal, the Charleston, and (coming next) the card notation, calling, jokers and scoring.
 - `packages/coach` (coming): simulation and coaching, run in a background worker.
-- `apps/web` (coming): the installable phone-friendly web app.
+- `apps/web`: the phone-friendly web app. Right now it's the Charleston trainer.
 
 ## Getting started
 
 ```sh
 pnpm install
-pnpm test
+pnpm test                          # engine tests
+pnpm --filter @mahjong-coach/web dev   # run the app at http://localhost:5173
 ```
+
+Add `?deal=1234` to the URL to replay a specific deal.
 
 ## The NMJL card
 

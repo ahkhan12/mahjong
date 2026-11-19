@@ -6,3 +6,4 @@ export * from "./charleston.js";
 export * from "./card.js";
 export * from "./analysis.js";
 export * from "./practice-card.js";
+export * from "./strategy.js";
