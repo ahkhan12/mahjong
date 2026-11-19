@@ -6,8 +6,9 @@
 //
 // Jokers can never be passed.
 //
-// Not yet supported: blind passes on the last pass of each Charleston (passing on
-// tiles you are receiving without looking at them). Coming in a later step.
+// Blind passes: on the last pass of each Charleston (first left, second right), a player
+// may pass on 1–3 of the tiles they are receiving without looking at them, topping up
+// with tiles from their own hand so the total is 3.
 
 import type { Hands } from "./deal.js";
 import { SEATS, seatFrom, type Direction, type Seat } from "./seats.js";
@@ -59,6 +60,61 @@ export function pass(hands: Hands, selections: Selections, direction: Direction)
   const outgoing = {} as Record<Seat, Tile[]>;
   for (const seat of SEATS) outgoing[seat] = pickTiles(seat, hands[seat], selections[seat], 3, 3);
   return exchange(hands, outgoing, direction);
+}
+
+/** The passes where a blind pass is allowed: the last pass of each Charleston. */
+export const BLIND_PASS_STEPS = [
+  { charleston: 1, direction: "left" },
+  { charleston: 2, direction: "right" },
+] as const;
+
+/** One seat's choice on a blind-pass step: tiles from its own hand, plus how many incoming tiles to pass on unseen. */
+export interface BlindChoice {
+  readonly own: readonly number[];
+  readonly blind: 0 | 1 | 2 | 3;
+}
+
+/**
+ * A pass where blind passing is allowed. Each seat passes `own` tiles from its hand plus
+ * the first `blind` tiles it receives, unseen, for 3 tiles total.
+ *
+ * Forwarded tiles can chain around the table (a tile can travel through several blind
+ * passers), so the outgoing piles are worked out by repeating until nothing changes.
+ * The piles only grow and are capped at 3, so this settles in a few rounds.
+ */
+export function blindPass(hands: Hands, choices: Readonly<Record<Seat, BlindChoice>>, direction: Direction): Hands {
+  const own = {} as Record<Seat, Tile[]>;
+  for (const seat of SEATS) {
+    const { own: ids, blind } = choices[seat];
+    if (ids.length + blind !== 3) {
+      throw new CharlestonError(seat, `own tiles plus blind tiles must make 3, got ${ids.length} + ${blind}`);
+    }
+    own[seat] = pickTiles(seat, hands[seat], ids, 0, 3);
+  }
+
+  // A tile can be passed on by up to 3 blind passers in a row, and each pile holds 3,
+  // so 4 seats × 3 tiles rounds is always enough to settle. Stop early once nothing changes.
+  const key = (o: Record<Seat, Tile[]>) => SEATS.map((s) => o[s].map((t) => t.id).join(",")).join("|");
+  let outgoing = { ...own };
+  for (let round = 0; round < 12; round++) {
+    const next = {} as Record<Seat, Tile[]>;
+    for (const seat of SEATS) {
+      const incoming = outgoing[seatFrom(seat, direction)];
+      next[seat] = [...own[seat], ...incoming.slice(0, choices[seat].blind)];
+    }
+    const settled = key(next) === key(outgoing);
+    outgoing = next;
+    if (settled) break;
+  }
+
+  const result = {} as Record<Seat, Tile[]>;
+  for (const seat of SEATS) {
+    const leaving = new Set(own[seat].map((t) => t.id));
+    const incoming = outgoing[seatFrom(seat, direction)];
+    const kept = incoming.slice(choices[seat].blind); // the ones passed on unseen never join the hand
+    result[seat] = [...hands[seat].filter((t) => !leaving.has(t.id)), ...kept];
+  }
+  return result;
 }
 
 /** The second Charleston happens only if no one stops it. */
