@@ -239,7 +239,7 @@ function Rack({
           const blocked = isBlocked(t);
           const lifted = drag?.active && drag.id === t.id;
           const style = lifted
-            ? { transform: `translate(${drag.dx}px, -34px) scale(1.5)` }
+            ? { transform: `translate(${drag.dx}px, -20px) scale(1.15)` }
             : shiftFor(i)
               ? { transform: `translateX(${shiftFor(i)}px)${isSel ? " translateY(-12px)" : ""}` }
               : undefined;
