@@ -15,7 +15,7 @@ import {
   type Game,
   type LogEntry,
 } from "./game";
-import { TileView } from "./Tile";
+import { TileView, tileName } from "./Tile";
 
 const SEAT_NAME = { east: "East", south: "South", west: "West", north: "North" } as const;
 const RATING_LABEL = { great: "Great", fine: "Fine", missed: "Missed chance", costly: "Costly" } as const;
@@ -102,6 +102,24 @@ function arrange(order: readonly number[], hand: readonly Tile[]): Tile[] {
   return [...kept, ...sortTiles(hand.filter((t) => !keptIds.has(t.id)))];
 }
 
+interface DragState {
+  id: number;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  dx: number;
+  /** Has the tile been picked up (held, or slid far enough)? Before that, it's still a tap. */
+  active: boolean;
+  from: number;
+  over: number;
+  /** Centers of every slot when the drag started. Tiles don't move in the page until you let go. */
+  centers: number[];
+  slot: number;
+}
+
+const HOLD_MS = 200;
+const SLIDE_PX = 6;
+
 function Rack({
   arrangement,
   selected,
@@ -119,36 +137,96 @@ function Rack({
 }) {
   const { tiles, onReorder, onSort } = arrangement;
   const rowRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ id: number; startX: number; moved: boolean } | null>(null);
-  const justDragged = useRef(false);
-  const [draggingId, setDraggingId] = useState<number | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const holdTimer = useRef<number | undefined>(undefined);
+  const swallowClick = useRef(false);
   const ids = tiles.map((t) => t.id);
+
+  const update = (next: DragState | null) => {
+    dragRef.current = next;
+    setDrag(next);
+  };
 
   const moveTo = (id: number, to: number) => {
     const rest = ids.filter((i) => i !== id);
     rest.splice(Math.max(0, Math.min(to, rest.length)), 0, id);
     onReorder(rest);
   };
-  // Which slot the pointer is over: the tile whose center is nearest.
-  const slotAt = (x: number) => {
-    const kids = Array.from(rowRef.current?.children ?? []) as HTMLElement[];
-    let best = 0;
-    let bestDist = Infinity;
-    kids.forEach((k, i) => {
-      const r = k.getBoundingClientRect();
-      const d = Math.abs(r.left + r.width / 2 - x);
-      if (d < bestDist) {
-        bestDist = d;
-        best = i;
-      }
-    });
-    return best;
+
+  const pickUp = (d: DragState) => {
+    try {
+      navigator.vibrate?.(15);
+    } catch {
+      /* not supported */
+    }
+    update({ ...d, active: true });
   };
+
+  const isBlocked = (t: Tile) => !onToggle || t.kind.type === "joker" || (!selected.has(t.id) && !canSelectMore);
+
+  // Window-level listeners while a finger or mouse is down, so the drag never gets lost.
+  useEffect(() => {
+    if (!drag) return;
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d || e.pointerId !== d.pointerId) return;
+      const dx = e.clientX - d.startX;
+      if (!d.active) {
+        if (Math.abs(dx) < SLIDE_PX) return;
+        window.clearTimeout(holdTimer.current);
+      }
+      e.preventDefault();
+      const x = d.centers[d.from]! + dx;
+      let over = 0;
+      let best = Infinity;
+      d.centers.forEach((c, i) => {
+        if (Math.abs(c - x) < best) {
+          best = Math.abs(c - x);
+          over = i;
+        }
+      });
+      if (!d.active) pickUp({ ...d, dx, over });
+      else update({ ...d, dx, over });
+    };
+    const onUp = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d || e.pointerId !== d.pointerId) return;
+      window.clearTimeout(holdTimer.current);
+      update(null);
+      if (d.active) {
+        swallowClick.current = true;
+        window.setTimeout(() => (swallowClick.current = false), 0);
+        if (d.over !== d.from) moveTo(d.id, d.over);
+      }
+    };
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [drag !== null]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const focusTile = (id: number) =>
     requestAnimationFrame(() => rowRef.current?.querySelector<HTMLButtonElement>(`[data-id="${id}"]`)?.focus());
 
+  const moving = drag?.active ? tiles.find((t) => t.id === drag.id) : undefined;
+
+  // While a tile is picked up, its neighbors slide over to open a gap where it will land.
+  const shiftFor = (i: number): number => {
+    if (!drag?.active) return 0;
+    const { from, over, slot } = drag;
+    if (i === from) return 0;
+    if (from < over && i > from && i <= over) return -slot;
+    if (over < from && i >= over && i < from) return slot;
+    return 0;
+  };
+
   return (
-    <section className="rack" aria-label="Your rack">
+    <section className={`rack${moving ? " is-arranging" : ""}`} aria-label="Your rack">
       <div className="rack-head">
         <p className="rack-label">Your rack</p>
         <button type="button" className="rack-sort" onClick={onSort}>
@@ -156,10 +234,15 @@ function Rack({
         </button>
       </div>
       <div className="rack-tiles" ref={rowRef}>
-        {tiles.map((t) => {
+        {tiles.map((t, i) => {
           const isSel = selected.has(t.id);
-          const joker = t.kind.type === "joker";
-          const blocked = !onToggle || joker || (!isSel && !canSelectMore);
+          const blocked = isBlocked(t);
+          const lifted = drag?.active && drag.id === t.id;
+          const style = lifted
+            ? { transform: `translate(${drag.dx}px, -34px) scale(1.5)` }
+            : shiftFor(i)
+              ? { transform: `translateX(${shiftFor(i)}px)${isSel ? " translateY(-12px)" : ""}` }
+              : undefined;
           return (
             <TileView
               key={t.id}
@@ -167,50 +250,45 @@ function Rack({
               selected={isSel}
               fresh={fresh.has(t.id)}
               hinted={hinted.has(t.id)}
-              dragging={draggingId === t.id}
+              dragging={!!lifted}
               blocked={blocked}
               onClick={() => {
-                if (justDragged.current) {
-                  justDragged.current = false;
-                  return;
-                }
+                if (swallowClick.current) return;
                 if (!blocked && onToggle) onToggle(t.id);
               }}
               buttonProps={{
                 "data-id": t.id,
+                ...(style ? { style } : {}),
+                onContextMenu: (e) => e.preventDefault(),
                 onPointerDown: (e) => {
-                  drag.current = { id: t.id, startX: e.clientX, moved: false };
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                },
-                onPointerMove: (e) => {
-                  const d = drag.current;
-                  if (!d) return;
-                  if (!d.moved) {
-                    if (Math.abs(e.clientX - d.startX) < 8) return;
-                    d.moved = true;
-                    setDraggingId(d.id);
-                  }
-                  const to = slotAt(e.clientX);
-                  if (ids.indexOf(d.id) !== to) moveTo(d.id, to);
-                },
-                onPointerUp: () => {
-                  // Swallow the click that may follow a drag, but only that one: browsers don't
-                  // always send it after the tile has moved, so clear the flag right after.
-                  if (drag.current?.moved) {
-                    justDragged.current = true;
-                    setTimeout(() => (justDragged.current = false), 0);
-                  }
-                  drag.current = null;
-                  setDraggingId(null);
-                },
-                onPointerCancel: () => {
-                  drag.current = null;
-                  setDraggingId(null);
+                  if (e.pointerType === "mouse" && e.button !== 0) return;
+                  const kids = Array.from(rowRef.current?.children ?? []) as HTMLElement[];
+                  const rects = kids.map((k) => k.getBoundingClientRect());
+                  const centers = rects.map((r) => r.left + r.width / 2);
+                  const slot = rects.length > 1 ? rects[1]!.left - rects[0]!.left : rects[0]?.width ?? 0;
+                  const d: DragState = {
+                    id: t.id,
+                    pointerId: e.pointerId,
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    dx: 0,
+                    active: false,
+                    from: i,
+                    over: i,
+                    centers,
+                    slot,
+                  };
+                  update(d);
+                  window.clearTimeout(holdTimer.current);
+                  holdTimer.current = window.setTimeout(() => {
+                    const cur = dragRef.current;
+                    if (cur && cur.id === t.id && !cur.active) pickUp(cur);
+                  }, HOLD_MS);
                 },
                 onKeyDown: (e) => {
                   if (!e.shiftKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
                   e.preventDefault();
-                  moveTo(t.id, ids.indexOf(t.id) + (e.key === "ArrowLeft" ? -1 : 1));
+                  moveTo(t.id, i + (e.key === "ArrowLeft" ? -1 : 1));
                   focusTile(t.id);
                 },
               }}
@@ -218,6 +296,9 @@ function Rack({
           );
         })}
       </div>
+      <p className="rack-status" aria-live="polite">
+        {moving ? `Moving ${tileName(moving.kind)}. Slide, then let go to drop it.` : ""}
+      </p>
     </section>
   );
 }
@@ -227,10 +308,10 @@ function RackNote({ hasFresh }: { hasFresh: boolean }) {
     <p className="rack-note">
       {hasFresh && (
         <>
-          <span className="new-dot inline" aria-hidden="true" /> New tiles are marked with a pink dot, at the right end.{" "}
+          <span className="new-dot inline" aria-hidden="true" /> New tiles have a pink dot and sit at the right end.{" "}
         </>
       )}
-      Drag a tile to move it. Tap to pick it.
+      Tap a tile to pick it for passing. Press and hold to pick it up, then slide to move it.
     </p>
   );
 }
